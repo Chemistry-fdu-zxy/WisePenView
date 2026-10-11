@@ -1,11 +1,13 @@
 import { ChevronDown, ChevronRight, NotebookPen } from 'lucide-react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMatch, useNavigate } from 'react-router-dom';
 import { useStore } from 'zustand';
 
 import { useCurrentRouteHandle } from '@/bootstrap/router';
 import type { HeaderNavItem } from '@/components/business/Sidebar/_common/header/HeaderNav/index.type';
-import { useNoteService } from '@/domains';
+import { useNoteService, useResourceService } from '@/domains';
+import { RESOURCE_SORT_BY, RESOURCE_SORT_DIR } from '@/domains/Resource';
 import { RESOURCE_KIND } from '@/domains/Resource/model/resourceTarget';
 import { resourceDisplayNameCache } from '@/domains/Resource/session/resourceDisplayNameCache';
 import { useApi } from '@/hooks/useApi';
@@ -27,6 +29,9 @@ interface AppSidebarHeaderNavResult {
   selectedKey?: string;
 }
 
+/** 「我的笔记」列表一次拉取的笔记数上限；列表按更新时间倒序，够覆盖侧边栏浏览。 */
+const MY_NOTES_PAGE_SIZE = 100;
+
 export function useAppSidebarHeaderNav({
   onNavigate,
 }: UseAppSidebarHeaderNavOptions = {}): AppSidebarHeaderNavResult {
@@ -34,12 +39,55 @@ export function useAppSidebarHeaderNav({
   const navigate = useNavigate();
   const appAuth = useAppAuth();
   const noteService = useNoteService();
+  const resourceService = useResourceService();
   const openResource = useOpenResource();
   const routeSelectedKey = useCurrentRouteHandle()?.appSidebar?.selectedHeaderNavKey ?? undefined;
   const activeId = useMatch(`${APP_ROUTE_PATH.RESOURCES}/:resourceType/:resourceId`)?.params
     .resourceId;
   const { notes, expanded, creating } = useMyNotesStore();
   const displayNames = useStore(resourceDisplayNameCache, (state) => state.byResourceId);
+
+  /**
+   * 「我的笔记」列出云盘里的全部笔记，数据源是资源列表接口；
+   * 本地 store 只负责正文/标题等运行时状态与候选资格，不再决定列表内容。
+   */
+  const { data: driveNotes } = useApi(
+    () =>
+      resourceService.getUserResources({
+        page: 1,
+        size: MY_NOTES_PAGE_SIZE,
+        sortBy: RESOURCE_SORT_BY.UPDATE_TIME,
+        sortDir: RESOURCE_SORT_DIR.DESC,
+        // 与创建笔记的 resourceType 枚举一致（CreateNoteRequest 使用大写 NOTE）。
+        resourceType: 'NOTE',
+      }),
+    { ready: appAuth.isAuthenticated, refreshDeps: [notes.length] }
+  );
+
+  /**
+   * @wisepen-manual-memo
+   * 为什么：列表要把「云盘拉取的笔记」与「本地 store 里的笔记」按 resourceId 合并去重，
+   * 每次渲染重算会为同一份数据反复重建 Set 与数组，并让下游导航项的引用每帧都变。
+   * 收益：只有 displayNames、driveNotes、notes 变化时才重建列表，引用保持稳定。
+   * 失效条件：不再合并两份来源、或调用方改为自己缓存时，该 memo 失去意义可移除。
+   */
+  const sidebarNotes = useMemo(() => {
+    // 本会话打开/新建过的笔记排在前面（新建与复用后由 reveal 前移），其余按更新时间倒序跟在后面。
+    const localIds = new Set(notes.map((note) => note.resourceId));
+    return [
+      ...notes.map((note) => ({
+        resourceId: note.resourceId,
+        name: displayNames[note.resourceId] ?? note.name,
+      })),
+      ...(driveNotes?.list ?? [])
+        .filter((item) => item.resourceId && !localIds.has(item.resourceId))
+        .map((item) => ({
+          resourceId: item.resourceId,
+          name: displayNames[item.resourceId] ?? item.resourceName,
+        })),
+    ];
+  }, [displayNames, driveNotes, notes]);
+
   const selectedKey = notes.some((note) => note.resourceId === activeId)
     ? expanded
       ? `my-note-${activeId}`
@@ -135,7 +183,7 @@ export function useAppSidebarHeaderNav({
     },
   ];
   if (expanded) {
-    if (!notes.length)
+    if (!sidebarNotes.length)
       noteItems.push({
         key: 'my-notes-empty',
         name: t('navigation.myNotesEmpty'),
@@ -144,10 +192,10 @@ export function useAppSidebarHeaderNav({
         nested: true,
         onPress: () => {},
       });
-    notes.forEach((note) =>
+    sidebarNotes.forEach((note) =>
       noteItems.push({
         key: `my-note-${note.resourceId}`,
-        name: displayNames[note.resourceId] ?? note.name,
+        name: note.name,
         icon: NotebookPen,
         nested: true,
         onPress: () => {
