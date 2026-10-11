@@ -5,6 +5,7 @@ import { useMatch, useNavigate } from 'react-router-dom';
 import { useStore } from 'zustand';
 
 import { useCurrentRouteHandle } from '@/bootstrap/router';
+import { useDriveRefreshVersion } from '@/components/business/Drive/driveRefresh';
 import type { HeaderNavItem } from '@/components/business/Sidebar/_common/header/HeaderNav/index.type';
 import { useNoteService, useResourceService } from '@/domains';
 import { RESOURCE_SORT_BY, RESOURCE_SORT_DIR } from '@/domains/Resource';
@@ -40,6 +41,7 @@ export function useAppSidebarHeaderNav({
   const appAuth = useAppAuth();
   const noteService = useNoteService();
   const resourceService = useResourceService();
+  const driveRefreshVersion = useDriveRefreshVersion();
   const openResource = useOpenResource();
   const routeSelectedKey = useCurrentRouteHandle()?.appSidebar?.selectedHeaderNavKey ?? undefined;
   const activeId = useMatch(`${APP_ROUTE_PATH.RESOURCES}/:resourceType/:resourceId`)?.params
@@ -61,7 +63,8 @@ export function useAppSidebarHeaderNav({
         // 与创建笔记的 resourceType 枚举一致（CreateNoteRequest 使用大写 NOTE）。
         resourceType: 'NOTE',
       }),
-    { ready: appAuth.isAuthenticated, refreshDeps: [notes.length] }
+    // 页面一打开就预取（不等展开），并在云盘增删改后跟着刷新。
+    { ready: appAuth.isAuthenticated, refreshDeps: [notes.length, driveRefreshVersion] }
   );
 
   /**
